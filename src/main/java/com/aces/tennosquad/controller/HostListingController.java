@@ -73,7 +73,6 @@ public class HostListingController {
     /// get all listing by host id
     @GetMapping("/{hostId}/all")
     public ResponseEntity<List<HostListingResponse>> getListingByHostId(@PathVariable Long hostId) {
-        System.out.println("******************************\n   HIT    \n**************************");
         return ResponseEntity.ok(
                 hostListingService.getListingByHostId(hostId)
         );

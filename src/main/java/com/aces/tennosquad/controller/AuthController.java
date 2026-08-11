@@ -3,13 +3,13 @@ package com.aces.tennosquad.controller;
 
 import com.aces.tennosquad.dto.login.LoginRequest;
 import com.aces.tennosquad.dto.user.MeResponse;
-import com.aces.tennosquad.dto.user.UserResponse;
 import com.aces.tennosquad.security.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -35,5 +35,13 @@ public class AuthController {
 
     }
 
+    @GetMapping("/csrf")
+    public ResponseEntity<CsrfToken> csrf(CsrfToken csrfToken) {
+
+        String token = csrfToken.getToken();
+
+
+        return ResponseEntity.ok(csrfToken);
+    }
 
 }

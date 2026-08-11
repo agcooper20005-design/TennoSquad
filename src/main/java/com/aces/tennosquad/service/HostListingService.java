@@ -127,11 +127,21 @@ public class HostListingService {
                 hostListingRepository.findByStatusNot(
                         HostListingStatus.CLOSED
                 );
+        openListings.forEach(System.out::println);
+
+        Instant now = Instant.now();
+
 
         List<HostListing> listingsToClose = openListings.stream()
-                .filter(listing -> listing.getMission() != null && !listing.getMission().isActive())
-                .peek(listing ->
-                        listing.setStatus(HostListingStatus.CLOSED)
+                .filter(listing -> {
+                    Mission mission = listing.getMission();
+                    if(mission == null) {
+                        return false;
+                    }
+                    boolean expired = mission.getExpiry() != null && !mission.getExpiry().isAfter(now);
+                    return !mission.isActive() || expired;
+                        })
+                .peek(listing -> listing.setStatus(HostListingStatus.CLOSED)
                 )
                 .toList();
 

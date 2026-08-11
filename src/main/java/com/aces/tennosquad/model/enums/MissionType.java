@@ -45,6 +45,7 @@ public enum MissionType {
     VOID_ARMAGEDDON,
     VOID_CASCADE,
     VOID_FLOOD,
+    HIVE,
     VOLATILE;
 
 

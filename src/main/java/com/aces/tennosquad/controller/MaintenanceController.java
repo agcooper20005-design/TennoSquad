@@ -54,6 +54,7 @@ public class MaintenanceController {
 
     @PostMapping("/host-listing/close-inactive")
     public ResponseEntity<Integer> closeListingsForInactiveMissions() {
+        System.out.println("HIT************\n\n\n");
         return ResponseEntity.ok(
                 hostListingService.closeListingsForInactiveMissions()
         );

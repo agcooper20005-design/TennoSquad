@@ -2,6 +2,7 @@ package com.aces.tennosquad.error_logs_and_testing;
 
 import java.io.IOException;
 import java.net.CookieManager;
+import java.net.HttpCookie;
 import java.net.CookiePolicy;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -9,7 +10,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -35,6 +38,8 @@ public class TennoSquadWorkflowRunner {
     private static int passed = 0;
     private static int failed = 0;
 
+    private static final Map<HttpClient, CookieManager> COOKIE_JARS = new IdentityHashMap<>();
+
     private static final HttpClient ANONYMOUS = newClient();
 
     private static final List<TestUser> USERS = new ArrayList<>();
@@ -48,6 +53,8 @@ public class TennoSquadWorkflowRunner {
     ) {}
 
     private record Response(int status, String body) {}
+
+    private record CsrfData(String headerName, String token) {}
 
     private record Relic(long id, String name, String era, boolean active) {}
 
@@ -97,6 +104,35 @@ public class TennoSquadWorkflowRunner {
         // 1. Backend + clean-database user creation
         // --------------------------------------------------
         expectStatus("Backend reachable", get(ANONYMOUS, "/api/missions/active"), 200);
+
+        Response csrfProbe = get(ANONYMOUS, "/api/auth/csrf");
+        expectStatus("CSRF token endpoint reachable", csrfProbe, 200);
+        expectTrue(
+                "CSRF response provides XSRF header name",
+                "X-XSRF-TOKEN".equals(readString(csrfProbe.body(), "headerName"))
+        );
+        expectTrue(
+                "CSRF response provides token",
+                readString(csrfProbe.body(), "token") != null
+                        && !readString(csrfProbe.body(), "token").isBlank()
+        );
+
+        HttpClient noCsrfClient = newClient();
+        expectStatus(
+                "Reject state-changing request without CSRF token",
+                postJsonWithoutCsrf(
+                        noCsrfClient,
+                        "/api/users",
+                        """
+                        {
+                          "userName": "csrf_should_fail",
+                          "warframeUserName": "CsrfShouldFail",
+                          "password": "WorkflowPassword!123"
+                        }
+                        """
+                ),
+                403
+        );
 
         String run = UUID.randomUUID().toString().replace("-", "").substring(0, 10);
 
@@ -776,7 +812,16 @@ public class TennoSquadWorkflowRunner {
         // --------------------------------------------------
         expectStatus("Final relics read", get(ANONYMOUS, "/api/relics"), 200);
         expectStatus("Final missions read", get(ANONYMOUS, "/api/missions"), 200);
-        expectStatus("Final listings read", get(ANONYMOUS, "/api/host-listings"), 200);
+        expectStatus(
+                "Anonymous cannot read all listing history",
+                get(ANONYMOUS, "/api/host-listings"),
+                401
+        );
+        expectStatus(
+                "Normal user cannot read all listing history",
+                get(USERS.get(1).client(), "/api/host-listings"),
+                403
+        );
         expectStatus("Final open listings read", get(ANONYMOUS, "/api/host-listings/open"), 200);
     }
 
@@ -903,10 +948,13 @@ public class TennoSquadWorkflowRunner {
         CookieManager cookies = new CookieManager();
         cookies.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
 
-        return HttpClient.newBuilder()
+        HttpClient client = HttpClient.newBuilder()
                 .cookieHandler(cookies)
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
+
+        COOKIE_JARS.put(client, cookies);
+        return client;
     }
 
     private static Response get(HttpClient client, String path) throws Exception {
@@ -919,24 +967,64 @@ public class TennoSquadWorkflowRunner {
     }
 
     private static Response postNoBody(HttpClient client, String path) throws Exception {
+        CsrfData csrf = fetchCsrf(client);
+
         return send(
                 client,
                 HttpRequest.newBuilder(URI.create(BASE_URL + path))
+                        .header(csrf.headerName(), csrf.token())
                         .POST(HttpRequest.BodyPublishers.noBody())
                         .build()
         );
     }
 
     private static Response patchNoBody(HttpClient client, String path) throws Exception {
+        CsrfData csrf = fetchCsrf(client);
+
         return send(
                 client,
                 HttpRequest.newBuilder(URI.create(BASE_URL + path))
+                        .header(csrf.headerName(), csrf.token())
                         .method("PATCH", HttpRequest.BodyPublishers.noBody())
                         .build()
         );
     }
 
     private static Response postJson(HttpClient client, String path, String json) throws Exception {
+        CsrfData csrf = fetchCsrf(client);
+
+        return send(
+                client,
+                HttpRequest.newBuilder(URI.create(BASE_URL + path))
+                        .header("Content-Type", "application/json")
+                        .header(csrf.headerName(), csrf.token())
+                        .POST(HttpRequest.BodyPublishers.ofString(json))
+                        .build()
+        );
+    }
+
+    private static Response patchJson(HttpClient client, String path, String json) throws Exception {
+        CsrfData csrf = fetchCsrf(client);
+
+        return send(
+                client,
+                HttpRequest.newBuilder(URI.create(BASE_URL + path))
+                        .header("Content-Type", "application/json")
+                        .header(csrf.headerName(), csrf.token())
+                        .method("PATCH", HttpRequest.BodyPublishers.ofString(json))
+                        .build()
+        );
+    }
+
+    /**
+     * Intentionally bypasses CSRF support. Used only to prove that Spring
+     * rejects an unsafe request when the token/header is missing.
+     */
+    private static Response postJsonWithoutCsrf(
+            HttpClient client,
+            String path,
+            String json
+    ) throws Exception {
         return send(
                 client,
                 HttpRequest.newBuilder(URI.create(BASE_URL + path))
@@ -946,14 +1034,50 @@ public class TennoSquadWorkflowRunner {
         );
     }
 
-    private static Response patchJson(HttpClient client, String path, String json) throws Exception {
-        return send(
-                client,
-                HttpRequest.newBuilder(URI.create(BASE_URL + path))
-                        .header("Content-Type", "application/json")
-                        .method("PATCH", HttpRequest.BodyPublishers.ofString(json))
-                        .build()
-        );
+    /**
+     * Fetches/refreshes CSRF using the same HttpClient/cookie jar that will
+     * send the following unsafe request. With Spring SPA CSRF support, the
+     * response-body token is BREACH-masked and can change per request; the
+     * X-XSRF-TOKEN request header must use the raw XSRF-TOKEN cookie value.
+     * This intentionally happens before every POST/PATCH so login/logout
+     * rotation cannot leave the runner holding a stale token.
+     */
+    private static CsrfData fetchCsrf(HttpClient client) throws Exception {
+        Response response = get(client, "/api/auth/csrf");
+
+        if (response.status() != 200) {
+            throw new IllegalStateException(
+                    "Unable to obtain CSRF token. HTTP "
+                            + response.status()
+                            + "\n"
+                            + response.body()
+            );
+        }
+
+        String headerName = readString(response.body(), "headerName");
+
+        CookieManager cookieManager = COOKIE_JARS.get(client);
+        if (cookieManager == null) {
+            throw new IllegalStateException("No cookie jar registered for HttpClient");
+        }
+
+        String token = cookieManager.getCookieStore()
+                .getCookies()
+                .stream()
+                .filter(cookie -> "XSRF-TOKEN".equals(cookie.getName()))
+                .map(HttpCookie::getValue)
+                .findFirst()
+                .orElse(null);
+
+        if (headerName == null || headerName.isBlank()
+                || token == null || token.isBlank()) {
+            throw new IllegalStateException(
+                    "CSRF request did not produce headerName/XSRF-TOKEN cookie\n"
+                            + response.body()
+            );
+        }
+
+        return new CsrfData(headerName, token);
     }
 
     private static Response send(HttpClient client, HttpRequest request) throws Exception {

@@ -18,6 +18,8 @@ import org.springframework.security.web.authentication.HttpStatusEntryPoint;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+
 
 import java.util.List;
 @Configuration
@@ -30,16 +32,18 @@ public class SecurityConfig {
 
 
         return http
-                .csrf(csrf -> csrf.disable())
+                .csrf(csrf -> csrf.spa())
                 .cors(Customizer.withDefaults())
                 .authorizeHttpRequests(auth ->auth
                         .requestMatchers("/api/auth/login").permitAll()
+                        .requestMatchers("/api/auth/csrf").permitAll()
                         // ADMIN ONLY
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/maintenance/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST ,"/api/relics/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/users/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST, "/api/missions/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/host-listings").hasRole("ADMIN")
 
                         //Logged-in user endpoints
                         .requestMatchers("/api/auth/me").authenticated()
@@ -93,7 +97,9 @@ public class SecurityConfig {
 
 
         configuration.setAllowedOrigins(
-                List.of("http://localhost:5173")
+                List.of("http://localhost:5173",
+                        "https://tennosquad.com",
+                        "https://spiderspot.fun")
         );
 
         configuration.setAllowedMethods(
